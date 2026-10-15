@@ -1,12 +1,13 @@
 /**
  * Orbit IndexedDB wrapper
  * Stores: habits, tasks, completions, meta
+ * v2: habit schedules, reminderTime, settings/PIN in meta
  */
 (function (global) {
   'use strict';
 
   const DB_NAME = 'orbit-db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
 
   let dbPromise = null;
 
@@ -18,6 +19,8 @@
       req.onsuccess = () => resolve(req.result);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
+        const from = e.oldVersion;
+
         if (!db.objectStoreNames.contains('habits')) {
           const habits = db.createObjectStore('habits', { keyPath: 'id' });
           habits.createIndex('sortOrder', 'sortOrder', { unique: false });
@@ -32,6 +35,24 @@
         }
         if (!db.objectStoreNames.contains('meta')) {
           db.createObjectStore('meta', { keyPath: 'key' });
+        }
+
+        // Migrate habit records when upgrading from v1
+        if (from < 2 && db.objectStoreNames.contains('habits')) {
+          const tx = e.target.transaction;
+          const store = tx.objectStore('habits');
+          const cursorReq = store.openCursor();
+          cursorReq.onsuccess = (ev) => {
+            const cursor = ev.target.result;
+            if (!cursor) return;
+            const h = cursor.value;
+            let changed = false;
+            if (!h.schedule) { h.schedule = 'daily'; changed = true; }
+            if (!Array.isArray(h.daysOfWeek)) { h.daysOfWeek = [0, 1, 2, 3, 4, 5, 6]; changed = true; }
+            if (h.reminderTime === undefined) { h.reminderTime = null; changed = true; }
+            if (changed) cursor.update(h);
+            cursor.continue();
+          };
         }
       };
     });
@@ -77,18 +98,86 @@
     streakBest: 0,
     lastActiveDate: null,
     streakFreezeRemaining: 1,
-    settings: {}
+    settings: {
+      notificationsEnabled: false,
+      pushEnabled: false,
+      pinEnabled: false,
+      pinHash: null,
+      pinSalt: null,
+      onboardingSeen: false
+    }
   };
+
+  function normalizeHabit(h) {
+    if (!h || typeof h !== 'object') return h;
+    return {
+      ...h,
+      schedule: h.schedule || 'daily',
+      daysOfWeek: Array.isArray(h.daysOfWeek) ? h.daysOfWeek : [0, 1, 2, 3, 4, 5, 6],
+      reminderTime: h.reminderTime != null && h.reminderTime !== '' ? h.reminderTime : null
+    };
+  }
+
+  function dayOfWeek(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d).getDay(); // 0=Sun
+  }
+
+  function isHabitDueOn(habit, dateStr) {
+    const h = normalizeHabit(habit);
+    const dow = dayOfWeek(dateStr);
+    if (h.schedule === 'daily') return true;
+    if (h.schedule === 'weekdays') return dow >= 1 && dow <= 5;
+    if (h.schedule === 'custom') {
+      return (h.daysOfWeek || []).map(Number).includes(dow);
+    }
+    return true;
+  }
+
+  function scheduleLabel(habit) {
+    const h = normalizeHabit(habit);
+    if (h.schedule === 'weekdays') return 'Weekdays';
+    if (h.schedule === 'custom') {
+      const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const days = (h.daysOfWeek || []).slice().sort((a, b) => a - b);
+      if (days.length === 7) return 'Daily';
+      if (days.length === 0) return 'Custom';
+      return days.map((d) => names[d]).join('·');
+    }
+    return 'Daily';
+  }
 
   const OrbitDB = {
     uid,
     DEFAULT_META,
+    normalizeHabit,
+    isHabitDueOn,
+    scheduleLabel,
+    dayOfWeek,
 
     async init() {
       await openDB();
       const existing = await this.getMeta();
       if (!existing) {
         await this.setMeta({ ...DEFAULT_META });
+      } else {
+        // Soft-migrate meta.settings and habit fields for DBs already on v2 schema
+        const settings = { ...DEFAULT_META.settings, ...(existing.settings || {}) };
+        if (!existing.settings || Object.keys(existing.settings).length < Object.keys(DEFAULT_META.settings).length) {
+          await this.updateMeta({ settings });
+        }
+        const habits = await this.getHabits({ includeArchived: true });
+        for (const h of habits) {
+          const n = normalizeHabit(h);
+          if (h.schedule !== n.schedule || h.reminderTime !== n.reminderTime ||
+              JSON.stringify(h.daysOfWeek) !== JSON.stringify(n.daysOfWeek)) {
+            await this.updateHabit(h.id, {
+              schedule: n.schedule,
+              daysOfWeek: n.daysOfWeek,
+              reminderTime: n.reminderTime
+            });
+          }
+        }
       }
       return this;
     },
@@ -96,7 +185,7 @@
     async getHabits({ includeArchived = false } = {}) {
       return tx('habits', 'readonly', (stores) =>
         reqToPromise(stores.habits.getAll()).then((all) => {
-          let list = all || [];
+          let list = (all || []).map(normalizeHabit);
           if (!includeArchived) list = list.filter((h) => !h.archived);
           list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.createdAt - b.createdAt);
           return list;
@@ -104,17 +193,41 @@
       );
     },
 
-    async addHabit(name) {
+    async getHabitsDueOn(dateStr) {
+      const habits = await this.getHabits();
+      return habits.filter((h) => isHabitDueOn(h, dateStr));
+    },
+
+    async addHabit(name, opts = {}) {
       const habits = await this.getHabits({ includeArchived: true });
-      const habit = {
+      const schedule = opts.schedule || 'daily';
+      let daysOfWeek = Array.isArray(opts.daysOfWeek) ? opts.daysOfWeek.map(Number) : [0, 1, 2, 3, 4, 5, 6];
+      if (schedule === 'weekdays') daysOfWeek = [1, 2, 3, 4, 5];
+      if (schedule === 'daily') daysOfWeek = [0, 1, 2, 3, 4, 5, 6];
+      const habit = normalizeHabit({
         id: uid(),
         name: String(name).trim().slice(0, 200),
         createdAt: Date.now(),
         archived: false,
-        sortOrder: habits.length
-      };
+        sortOrder: habits.length,
+        schedule,
+        daysOfWeek,
+        reminderTime: opts.reminderTime || null
+      });
       await tx('habits', 'readwrite', (stores) => { stores.habits.put(habit); });
       return habit;
+    },
+
+    async updateHabit(id, partial) {
+      return tx('habits', 'readwrite', (stores) =>
+        reqToPromise(stores.habits.get(id)).then((h) => {
+          if (!h) return null;
+          const next = normalizeHabit({ ...h, ...partial, id: h.id });
+          if (partial.name != null) next.name = String(partial.name).trim().slice(0, 200);
+          stores.habits.put(next);
+          return next;
+        })
+      );
     },
 
     async deleteHabit(id) {
@@ -143,7 +256,6 @@
 
     async setHabitDone(habitId, date, done) {
       const id = this.completionKey(habitId, date);
-      // Returns true only if state actually changed (prevents double XP on rapid taps)
       return tx('completions', 'readwrite', (stores) =>
         reqToPromise(stores.completions.get(id)).then((existing) => {
           if (done) {
@@ -231,7 +343,11 @@
     },
 
     async setMeta(value) {
-      const merged = { ...DEFAULT_META, ...value };
+      const merged = {
+        ...DEFAULT_META,
+        ...value,
+        settings: { ...DEFAULT_META.settings, ...((value && value.settings) || {}) }
+      };
       await tx('meta', 'readwrite', (stores) => {
         stores.meta.put({ key: 'state', value: merged });
       });
@@ -240,7 +356,21 @@
 
     async updateMeta(partial) {
       const current = (await this.getMeta()) || { ...DEFAULT_META };
-      return this.setMeta({ ...current, ...partial });
+      const next = { ...current, ...partial };
+      if (partial.settings) {
+        next.settings = { ...DEFAULT_META.settings, ...(current.settings || {}), ...partial.settings };
+      }
+      return this.setMeta(next);
+    },
+
+    async getSettings() {
+      const meta = (await this.getMeta()) || { ...DEFAULT_META };
+      return { ...DEFAULT_META.settings, ...(meta.settings || {}) };
+    },
+
+    async updateSettings(partial) {
+      const settings = await this.getSettings();
+      return this.updateMeta({ settings: { ...settings, ...partial } });
     },
 
     async getActiveDates() {
@@ -284,7 +414,7 @@
         this.getMeta()
       ]);
       return {
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         app: 'Orbit',
         habits,
@@ -300,11 +430,18 @@
         throw new Error('Not an Orbit backup');
       }
       const okId = (x) => x && typeof x === 'object' && (typeof x.id === 'string' || typeof x.id === 'number');
-      const habits = data.habits, tasks = data.tasks, completions = data.completions;
+      const habits = data.habits.map(normalizeHabit);
+      const tasks = data.tasks;
+      const completions = data.completions;
       if (!habits.every(okId) || !tasks.every(okId) || !completions.every(okId)) {
         throw new Error('Backup has malformed records');
       }
-      const meta = data.meta && typeof data.meta === 'object' ? data.meta : { ...DEFAULT_META };
+      const metaIn = data.meta && typeof data.meta === 'object' ? data.meta : { ...DEFAULT_META };
+      const meta = {
+        ...DEFAULT_META,
+        ...metaIn,
+        settings: { ...DEFAULT_META.settings, ...(metaIn.settings || {}) }
+      };
 
       await tx(['habits', 'tasks', 'completions', 'meta'], 'readwrite', (stores) => {
         stores.habits.clear();
@@ -314,7 +451,7 @@
         habits.forEach((h) => stores.habits.put(h));
         tasks.forEach((t) => stores.tasks.put(t));
         completions.forEach((c) => stores.completions.put(c));
-        stores.meta.put({ key: 'state', value: { ...DEFAULT_META, ...meta } });
+        stores.meta.put({ key: 'state', value: meta });
       });
     },
 
@@ -324,8 +461,41 @@
         stores.tasks.clear();
         stores.completions.clear();
         stores.meta.clear();
-        stores.meta.put({ key: 'state', value: { ...DEFAULT_META } });
+        stores.meta.put({ key: 'state', value: { ...DEFAULT_META, settings: { ...DEFAULT_META.settings } } });
       });
+    },
+
+    /* —— PIN (casual lock) —— */
+    async hashPin(pin, saltB64) {
+      const enc = new TextEncoder();
+      const salt = saltB64
+        ? Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0))
+        : crypto.getRandomValues(new Uint8Array(16));
+      const data = new Uint8Array(salt.length + enc.encode(String(pin)).length);
+      data.set(salt, 0);
+      data.set(enc.encode(String(pin)), salt.length);
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      const hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
+      const saltOut = btoa(String.fromCharCode(...salt));
+      return { hash, salt: saltOut };
+    },
+
+    async setPin(pin) {
+      const digits = String(pin || '').replace(/\D/g, '');
+      if (digits.length < 4 || digits.length > 6) throw new Error('PIN must be 4–6 digits');
+      const { hash, salt } = await this.hashPin(digits);
+      await this.updateSettings({ pinEnabled: true, pinHash: hash, pinSalt: salt });
+    },
+
+    async clearPin() {
+      await this.updateSettings({ pinEnabled: false, pinHash: null, pinSalt: null });
+    },
+
+    async verifyPin(pin) {
+      const settings = await this.getSettings();
+      if (!settings.pinEnabled || !settings.pinHash || !settings.pinSalt) return true;
+      const { hash } = await this.hashPin(String(pin).replace(/\D/g, ''), settings.pinSalt);
+      return hash === settings.pinHash;
     }
   };
 

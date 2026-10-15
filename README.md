@@ -1,77 +1,83 @@
 # Orbit
 
 Offline-first Progressive Web App for personal habits, tasks, and progression tracking.  
-No accounts. No backend. Data stays in your browser (IndexedDB) and works offline after first load.
+No accounts. No paid backend. Core data stays in each visitor’s browser (IndexedDB) and works offline after first load.
 
-**Working name:** Orbit — dark UI, red accents, XP / levels / streak with freeze recovery.
+**Live:** https://shltdog.github.io/orbit-pwa/
 
-## Features (MVP)
+## Features
 
-- **Today** — quick-add tasks or habits, one-tap complete
-- **Progress** — level, XP bar, streak + best, freeze remaining, today %, last 7 days
-- **Backup** — JSON export / import
-- **Installable PWA** — manifest + service worker + home-screen icons
+- **Today** — quick-add tasks / habits, one-tap complete, haptics + completion pulse
+- **Habit schedules** — daily, weekdays, or custom days of week (Today only shows what’s due)
+- **Reminders** — optional per-habit `HH:MM` local notifications (permission requested from Settings only)
+- **Presets** — Morning / Evening check-in packs
+- **Progress** — XP, levels, streak + freeze, today %, last 7 days
+- **Weekly review** — avg completion, best day, most-missed habits, XP this week
+- **Share** — send the app URL; friends get their own blank Orbit (their data never mixes with yours)
+- **Casual PIN lock** — optional 4–6 digit PIN hashed on-device (not strong encryption)
+- **Backup** — JSON export / import (validated Orbit backups only)
+- **Optional Web Push** — free Cloudflare Worker scaffold in `push-worker/` (off until you configure it)
 - Core functions always available (nothing locked behind levels)
 
-## Run locally
+## Sharing (how it stays free & private)
 
-Serve the folder over HTTP (required for service workers):
+Anyone who opens your GitHub Pages link gets a **fresh empty app** with data only in **their** IndexedDB. Sharing the URL shares the *app*, not your habits. Use Export/Import JSON to move *your* data between devices.
+
+## Run locally
 
 ```bash
 cd orbit-pwa
 python3 -m http.server 8765
 ```
 
-Open `http://localhost:8765` in a browser.
-
-Or any static server:
-
-```bash
-npx --yes serve -l 8765
-```
+Open `http://localhost:8765` (service workers need HTTP(S)).
 
 ## Host for free
 
-### GitHub Pages
-
-1. Create a repo (e.g. `orbit-pwa`) and push these files to the root (or `docs/`).
-2. **Settings → Pages →** Deploy from branch `main` / root (or `/docs`).
-3. Visit `https://<user>.github.io/<repo>/`.
-
-### Cloudflare Pages
-
-1. Connect the repo (or upload the folder / zip).
-2. Build command: none. Output directory: `/` (project root).
-3. Deploy. Use the `*.pages.dev` URL or a custom domain.
-
-HTTPS is required for install / service worker on real devices.
+Already on GitHub Pages from this repo (`master` → Pages).  
+Or Cloudflare Pages: no build command, output `/`.
 
 ## Install on iPhone
 
-1. Open the hosted URL in **Safari** (not Chrome/in-app browsers).
-2. Tap the **Share** button.
-3. Tap **Add to Home Screen**.
-4. Confirm name **Orbit** → **Add**.
+1. Open the HTTPS URL in **Safari**.
+2. Share → **Add to Home Screen**.
+3. Launch from the icon for standalone mode.
 
-Launch from the home screen for standalone mode. After the first visit, the app shell caches for offline use.
+### iOS notifications (honest limits)
 
-## Data & backups
+| Capability | Reality on iPhone |
+|------------|-------------------|
+| Add to Home Screen PWA | Required for the best experience |
+| Local notifications | Best-effort: work when permission is granted and the app/SW can run a check. Not as reliable as native apps when the PWA is fully killed. |
+| Web Push | Supported for Home Screen PWAs on **iOS 16.4+**. Needs the optional Worker + VAPID config. Still requires user permission. |
+| Permission prompt | Orbit only asks when you tap **Enable** in Settings — never on first load. |
 
-- Everything is stored locally in IndexedDB (`orbit-db`).
-- **Progress → Export JSON** downloads a backup.
-- **Import JSON** replaces local data (confirm first).
-- Clearing Safari site data / “Reset all data” in Settings wipes Orbit on that device.
+Android / desktop Chromium generally have stronger background notification support.
 
-## Gamification (MVP)
+## Optional: free Web Push (Cloudflare Worker)
+
+See **[`push-worker/README.md`](push-worker/README.md)** for the full checklist.
+
+Short version:
+
+1. `cd push-worker && npm install`
+2. `npx web-push generate-vapid-keys`
+3. Create KV namespace, set secrets (`VAPID_*`, `PUSH_SECRET`), `npx wrangler deploy`
+4. Put Worker URL + **public** VAPID key into `js/config.js`
+5. Push to GitHub Pages and enable push in Orbit Settings
+
+Until `PUSH_WORKER_URL` and `VAPID_PUBLIC_KEY` are set, the push UI stays hidden. Local reminders still work.
+
+## Gamification
 
 | Action | XP |
 |--------|-----|
 | Complete habit | +10 |
 | Complete task | +15 |
 
-- Levels use a simple cumulative curve: level *N* starts at `100 × (N−1)×N / 2` XP.
-- Streak counts consecutive active days (any habit/task completion).
-- **Freeze recovery:** one miss can be covered by a freeze so the streak does not reset; freezes soft-refill after sustained activity.
+- Levels: level *N* starts at `100 × (N−1)×N / 2` XP.
+- Streak: consecutive active days; **one freeze** can cover a single miss.
+- Features are never gated by level.
 
 ## Project layout
 
@@ -79,25 +85,23 @@ Launch from the home screen for standalone mode. After the first visit, the app 
 orbit-pwa/
   index.html
   css/styles.css
-  js/db.js
+  js/config.js          # push placeholders
+  js/db.js              # IndexedDB + schedules + PIN
   js/gamification.js
+  js/reminders.js       # local + push client
   js/app.js
-  sw.js
+  sw.js                 # cache orbit-v3 + notifications
   manifest.webmanifest
-  icons/icon-192.png
-  icons/icon-512.png
-  icons/icon.svg
+  icons/
+  push-worker/          # optional Cloudflare Worker
   README.md
 ```
 
-## Known MVP limitations
+## Data & backups
 
-- No push notifications or reminders
-- No recurring task schedules beyond daily habits
-- No multi-device sync (use JSON export/import)
-- Undoing a completion subtracts XP but does not perfectly reverse historical streak edge cases
-- Icons are simple geometric marks (not a full brand kit)
-- Best installed via Safari on iOS; Add to Home Screen is Safari-only
+- IndexedDB database: `orbit-db` (schema v2 — habits gain `schedule`, `daysOfWeek`, `reminderTime`).
+- **Progress → Export / Import JSON**. Imports must be Orbit backups (`app: "Orbit"`); bad files do not wipe data.
+- Clearing site data or **Reset all data** wipes Orbit on that device only.
 
 ## License
 

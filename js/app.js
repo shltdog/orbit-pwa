@@ -1,17 +1,45 @@
 /**
- * Orbit UI — Today, Progress, Settings
+ * Orbit UI — Today, Progress, Settings, lock, presets, share
  */
 (function () {
   'use strict';
 
   const CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
   const TRASH_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>';
+  const EDIT_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+
+  const PRESETS = {
+    morning: {
+      label: 'Morning check-in',
+      habits: [
+        { name: 'Hydrate', schedule: 'daily' },
+        { name: 'Stretch', schedule: 'daily' },
+        { name: 'Plan the day', schedule: 'weekdays' }
+      ]
+    },
+    evening: {
+      label: 'Evening wind-down',
+      habits: [
+        { name: 'Review the day', schedule: 'daily' },
+        { name: 'Prep tomorrow', schedule: 'weekdays' },
+        { name: 'Screens off', schedule: 'daily', reminderTime: '21:30' }
+      ]
+    }
+  };
 
   let captureType = 'task';
   let toastTimer = null;
+  let unlocked = false;
+  let editingHabitId = null;
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+  function haptic(pattern) {
+    try {
+      if (navigator.vibrate) navigator.vibrate(pattern || 12);
+    } catch (_) { /* ignore */ }
+  }
 
   function showToast(msg) {
     const el = $('#toast');
@@ -45,29 +73,42 @@
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    if (name === 'progress') renderProgress();
+    if (name === 'progress') {
+      renderProgress();
+      renderWeeklyReview();
+    }
+    if (name === 'settings') renderSettings();
   }
 
   async function renderToday() {
     const today = OrbitDB.today();
     $('#today-date').textContent = formatHeaderDate();
 
-    const habits = await OrbitDB.getHabits();
+    const habits = await OrbitDB.getHabitsDueOn(today);
+    const allHabits = await OrbitDB.getHabits();
     const tasks = await OrbitDB.getTasksForDate(today);
     const completions = await OrbitDB.getCompletionsForDate(today);
     const doneSet = new Set(completions.map((c) => c.habitId));
 
     const habitsList = $('#habits-list');
     const habitsEmpty = $('#habits-empty');
+    const onboarding = $('#onboarding-card');
+    const presetsRow = $('#presets-row');
     habitsList.innerHTML = '';
+
+    const showEmptyOnboarding = allHabits.length === 0 && tasks.length === 0;
+    if (onboarding) onboarding.classList.toggle('hidden', !showEmptyOnboarding);
+    if (presetsRow) presetsRow.classList.toggle('hidden', allHabits.length > 0 && !showEmptyOnboarding);
 
     if (habits.length === 0) {
       habitsEmpty.classList.remove('hidden');
+      habitsEmpty.textContent = allHabits.length === 0
+        ? 'No habits yet. Add one or try a Morning / Evening preset.'
+        : 'No habits due today — enjoy the lighter schedule.';
     } else {
       habitsEmpty.classList.add('hidden');
       habits.forEach((h) => {
-        const done = doneSet.has(h.id);
-        habitsList.appendChild(makeHabitCard(h, done));
+        habitsList.appendChild(makeHabitCard(h, doneSet.has(h.id)));
       });
     }
 
@@ -79,9 +120,19 @@
       tasksEmpty.classList.remove('hidden');
     } else {
       tasksEmpty.classList.add('hidden');
-      tasks.forEach((t) => {
-        tasksList.appendChild(makeTaskCard(t, today));
-      });
+      tasks.forEach((t) => tasksList.appendChild(makeTaskCard(t, today)));
+    }
+
+    // Not due today but exist — small note
+    const notDue = allHabits.filter((h) => !OrbitDB.isHabitDueOn(h, today));
+    const skipEl = $('#habits-skipped');
+    if (skipEl) {
+      if (notDue.length) {
+        skipEl.classList.remove('hidden');
+        skipEl.textContent = notDue.length + ' habit' + (notDue.length > 1 ? 's' : '') + ' not scheduled today';
+      } else {
+        skipEl.classList.add('hidden');
+      }
     }
   }
 
@@ -89,21 +140,31 @@
     const li = document.createElement('li');
     li.className = 'item-card' + (done ? ' completed' : '');
     li.dataset.id = habit.id;
+    const metaParts = [OrbitDB.scheduleLabel(habit)];
+    if (habit.reminderTime) metaParts.push('⏰ ' + habit.reminderTime);
     li.innerHTML =
       '<div class="check" aria-hidden="true">' + CHECK_SVG + '</div>' +
-      '<div class="item-body"><p class="item-title"></p><p class="item-meta">Habit · daily</p></div>' +
+      '<div class="item-body"><p class="item-title"></p><p class="item-meta"></p></div>' +
+      '<button type="button" class="item-edit" aria-label="Edit habit">' + EDIT_SVG + '</button>' +
       '<button type="button" class="item-delete" aria-label="Delete habit">' + TRASH_SVG + '</button>';
     li.querySelector('.item-title').textContent = habit.name;
+    li.querySelector('.item-meta').textContent = metaParts.join(' · ');
 
     li.addEventListener('click', async (e) => {
-      if (e.target.closest('.item-delete')) return;
+      if (e.target.closest('.item-delete') || e.target.closest('.item-edit')) return;
       await toggleHabit(habit.id, !done, li);
+    });
+
+    li.querySelector('.item-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openHabitEditor(habit);
     });
 
     li.querySelector('.item-delete').addEventListener('click', async (e) => {
       e.stopPropagation();
       if (!confirm('Delete habit "' + habit.name + '"?')) return;
       await OrbitDB.deleteHabit(habit.id);
+      await OrbitReminders.syncRemindersToSW();
       await renderToday();
       showToast('Habit removed');
     });
@@ -147,20 +208,24 @@
     if (busy.has(id)) return;
     busy.add(id);
     try {
-    const today = OrbitDB.today();
-    const changed = await OrbitDB.setHabitDone(id, today, done);
-    if (!changed) {
-      // no-op
-    } else if (done) {
-      el.classList.add('completed', 'just-done');
-      const result = await OrbitGame.awardXp(OrbitGame.XP_HABIT, today);
-      showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
-    } else {
-      el.classList.remove('completed', 'just-done');
-      await OrbitGame.revokeXp(OrbitGame.XP_HABIT);
-      showToast('Undone');
-    }
-    await renderToday();
+      const today = OrbitDB.today();
+      const changed = await OrbitDB.setHabitDone(id, today, done);
+      if (!changed) {
+        // no-op
+      } else if (done) {
+        el.classList.add('completed', 'just-done');
+        haptic([10, 30, 18]);
+        const result = await OrbitGame.awardXp(OrbitGame.XP_HABIT, today);
+        showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
+        await OrbitReminders.syncRemindersToSW();
+      } else {
+        el.classList.remove('completed', 'just-done');
+        haptic(8);
+        await OrbitGame.revokeXp(OrbitGame.XP_HABIT);
+        showToast('Undone');
+        await OrbitReminders.syncRemindersToSW();
+      }
+      await renderToday();
     } finally { busy.delete(id); }
   }
 
@@ -168,20 +233,22 @@
     if (busy.has(id)) return;
     busy.add(id);
     try {
-    const today = OrbitDB.today();
-    const changed = await OrbitDB.setTaskCompleted(id, done);
-    if (!changed) {
-      // no-op
-    } else if (done) {
-      el.classList.add('completed', 'just-done');
-      const result = await OrbitGame.awardXp(OrbitGame.XP_TASK, today);
-      showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
-    } else {
-      el.classList.remove('completed', 'just-done');
-      await OrbitGame.revokeXp(OrbitGame.XP_TASK);
-      showToast('Undone');
-    }
-    await renderToday();
+      const today = OrbitDB.today();
+      const changed = await OrbitDB.setTaskCompleted(id, done);
+      if (!changed) {
+        // no-op
+      } else if (done) {
+        el.classList.add('completed', 'just-done');
+        haptic([10, 30, 18]);
+        const result = await OrbitGame.awardXp(OrbitGame.XP_TASK, today);
+        showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
+      } else {
+        el.classList.remove('completed', 'just-done');
+        haptic(8);
+        await OrbitGame.revokeXp(OrbitGame.XP_TASK);
+        showToast('Undone');
+      }
+      await renderToday();
     } finally { busy.delete(id); }
   }
 
@@ -216,6 +283,44 @@
     });
   }
 
+  async function renderWeeklyReview() {
+    const el = $('#weekly-review');
+    if (!el) return;
+    const w = await OrbitGame.weeklyReview();
+    const avg = w.avgPct == null ? '—' : w.avgPct + '%';
+    const best = w.bestDay
+      ? w.bestDay.label + ' · ' + w.bestDay.pct + '%'
+      : '—';
+    const missed = w.mostMissed.length
+      ? w.mostMissed.map((m) => m.name + ' (' + m.misses + ')').join(', ')
+      : 'None — nice week';
+    el.innerHTML =
+      '<p class="stat-label">Weekly review</p>' +
+      '<div class="review-grid">' +
+      '<div><p class="stat-hint">Avg complete</p><p class="stat-value">' + avg + '</p></div>' +
+      '<div><p class="stat-hint">Best day</p><p class="stat-value">' + escapeHtml(best) + '</p></div>' +
+      '<div><p class="stat-hint">XP this week</p><p class="stat-value">~' + w.xpWeek + '</p></div>' +
+      '<div><p class="stat-hint">Streak</p><p class="stat-value">' + w.streakCurrent + ' · best ' + w.streakBest + '</p></div>' +
+      '</div>' +
+      '<p class="stat-hint review-missed"><strong>Most missed:</strong> ' + escapeHtml(missed) + '</p>' +
+      '<div class="week-bars" aria-label="Daily completion">' +
+      w.dayStats.map((d) => {
+        const h = d.pct == null ? 4 : Math.max(8, Math.round((d.pct / 100) * 48));
+        return '<div class="week-bar" title="' + d.date + ': ' + (d.pct == null ? 'n/a' : d.pct + '%') + '">' +
+          '<div class="week-bar-fill" style="height:' + h + 'px"></div>' +
+          '<span>' + escapeHtml(d.label) + '</span></div>';
+      }).join('') +
+      '</div>';
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   async function onCapture(e) {
     e.preventDefault();
     const input = $('#capture-input');
@@ -223,15 +328,29 @@
     if (!text) return;
 
     if (captureType === 'habit') {
-      await OrbitDB.addHabit(text);
+      const schedule = ($('#habit-schedule') && $('#habit-schedule').value) || 'daily';
+      const reminderTime = ($('#habit-reminder') && $('#habit-reminder').value) || null;
+      const days = getCustomDays();
+      await OrbitDB.addHabit(text, {
+        schedule,
+        daysOfWeek: schedule === 'custom' ? days : undefined,
+        reminderTime: reminderTime || null
+      });
       showToast('Habit added');
+      haptic(10);
+      await OrbitReminders.syncRemindersToSW();
     } else {
       await OrbitDB.addTask(text, OrbitDB.today());
       showToast('Task added');
+      haptic(10);
     }
     input.value = '';
     input.blur();
     await renderToday();
+  }
+
+  function getCustomDays() {
+    return $$('.day-chip.active').map((el) => Number(el.dataset.day));
   }
 
   function bindCaptureType() {
@@ -240,8 +359,22 @@
         captureType = btn.dataset.type;
         $$('.type-btn').forEach((b) => b.classList.toggle('active', b === btn));
         $('#capture-input').placeholder =
-          captureType === 'habit' ? 'New daily habit…' : 'Add a task…';
+          captureType === 'habit' ? 'New habit…' : 'Add a task…';
+        const opts = $('#habit-options');
+        if (opts) opts.classList.toggle('hidden', captureType !== 'habit');
       });
+    });
+
+    const sched = $('#habit-schedule');
+    if (sched) {
+      sched.addEventListener('change', () => {
+        const custom = $('#custom-days');
+        if (custom) custom.classList.toggle('hidden', sched.value !== 'custom');
+      });
+    }
+
+    $$('.day-chip').forEach((chip) => {
+      chip.addEventListener('click', () => chip.classList.toggle('active'));
     });
   }
 
@@ -257,9 +390,8 @@
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const stamp = OrbitDB.today();
       a.href = url;
-      a.download = 'orbit-backup-' + stamp + '.json';
+      a.download = 'orbit-backup-' + OrbitDB.today() + '.json';
       a.click();
       URL.revokeObjectURL(url);
       showToast('Exported');
@@ -277,6 +409,8 @@
         await OrbitDB.importAll(data);
         await renderToday();
         await renderProgress();
+        await renderWeeklyReview();
+        await OrbitReminders.syncRemindersToSW();
         showToast('Imported');
       } catch (err) {
         console.error(err);
@@ -287,9 +421,298 @@
     $('#btn-reset').addEventListener('click', async () => {
       if (!confirm('Reset ALL Orbit data on this device? This cannot be undone.')) return;
       await OrbitDB.resetAll();
+      unlocked = true;
+      hideLock();
       await renderToday();
       await renderProgress();
+      await renderSettings();
       showToast('Reset complete');
+    });
+  }
+
+  async function doShare() {
+    const url = OrbitReminders.appUrl();
+    const payload = {
+      title: 'Orbit',
+      text: 'Try Orbit — private offline habit tracker. Your data stays on your device.',
+      url
+    };
+    try {
+      if (navigator.share) {
+        await navigator.share(payload);
+      } else {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied');
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      try {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied');
+      } catch (_) {
+        prompt('Copy this Orbit link:', url);
+      }
+    }
+  }
+
+  function bindShare() {
+    ['#btn-share', '#btn-share-onboarding', '#btn-share-settings'].forEach((sel) => {
+      const btn = $(sel);
+      if (btn) btn.addEventListener('click', doShare);
+    });
+  }
+
+  function bindPresets() {
+    $$('[data-preset]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const key = btn.dataset.preset;
+        const pack = PRESETS[key];
+        if (!pack) return;
+        for (const h of pack.habits) {
+          await OrbitDB.addHabit(h.name, {
+            schedule: h.schedule || 'daily',
+            reminderTime: h.reminderTime || null
+          });
+        }
+        haptic([8, 40, 12]);
+        showToast(pack.label + ' added');
+        await OrbitReminders.syncRemindersToSW();
+        await renderToday();
+      });
+    });
+    ['#btn-presets', '#btn-presets-toggle'].forEach((sel) => {
+      const openPresets = $(sel);
+      if (openPresets) {
+        openPresets.addEventListener('click', () => {
+          const row = $('#presets-row');
+          if (row) row.classList.toggle('hidden');
+        });
+      }
+    });
+  }
+
+  /* —— Habit editor modal —— */
+  function openHabitEditor(habit) {
+    editingHabitId = habit.id;
+    const modal = $('#habit-modal');
+    if (!modal) return;
+    $('#edit-habit-name').value = habit.name;
+    $('#edit-habit-schedule').value = habit.schedule || 'daily';
+    $('#edit-habit-reminder').value = habit.reminderTime || '';
+    $$('#edit-custom-days .day-chip').forEach((chip) => {
+      const day = Number(chip.dataset.day);
+      chip.classList.toggle('active', (habit.daysOfWeek || []).includes(day));
+    });
+    $('#edit-custom-days').classList.toggle('hidden', (habit.schedule || 'daily') !== 'custom');
+    modal.hidden = false;
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeHabitEditor() {
+    editingHabitId = null;
+    const modal = $('#habit-modal');
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function bindHabitEditor() {
+    const sched = $('#edit-habit-schedule');
+    if (sched) {
+      sched.addEventListener('change', () => {
+        $('#edit-custom-days').classList.toggle('hidden', sched.value !== 'custom');
+      });
+    }
+    $$('#edit-custom-days .day-chip').forEach((chip) => {
+      chip.addEventListener('click', () => chip.classList.toggle('active'));
+    });
+    $('#habit-modal-cancel') && $('#habit-modal-cancel').addEventListener('click', closeHabitEditor);
+    $('#habit-modal-backdrop') && $('#habit-modal-backdrop').addEventListener('click', closeHabitEditor);
+    $('#habit-modal-save') && $('#habit-modal-save').addEventListener('click', async () => {
+      if (!editingHabitId) return;
+      const name = ($('#edit-habit-name').value || '').trim();
+      if (!name) { alert('Name required'); return; }
+      const schedule = $('#edit-habit-schedule').value;
+      const reminderTime = ($('#edit-habit-reminder').value || '').trim() || null;
+      const daysOfWeek = $$('#edit-custom-days .day-chip.active').map((c) => Number(c.dataset.day));
+      if (schedule === 'custom' && daysOfWeek.length === 0) {
+        alert('Pick at least one day');
+        return;
+      }
+      await OrbitDB.updateHabit(editingHabitId, {
+        name,
+        schedule,
+        daysOfWeek: schedule === 'custom' ? daysOfWeek : (schedule === 'weekdays' ? [1, 2, 3, 4, 5] : [0, 1, 2, 3, 4, 5, 6]),
+        reminderTime
+      });
+      closeHabitEditor();
+      await OrbitReminders.syncRemindersToSW();
+      await renderToday();
+      showToast('Habit updated');
+    });
+  }
+
+  /* —— Settings —— */
+  async function renderSettings() {
+    const settings = await OrbitDB.getSettings();
+    const perm = await OrbitReminders.notificationPermission();
+    const notifBtn = $('#btn-enable-notifications');
+    const notifStatus = $('#notif-status');
+    if (notifStatus) {
+      notifStatus.textContent =
+        perm === 'unsupported' ? 'Not supported in this browser'
+          : perm === 'granted' && settings.notificationsEnabled ? 'Local reminders on'
+            : perm === 'denied' ? 'Blocked — enable in system settings'
+              : 'Off — tap to enable';
+    }
+    if (notifBtn) {
+      notifBtn.textContent = settings.notificationsEnabled && perm === 'granted'
+        ? 'Disable local reminders'
+        : 'Enable local reminders';
+    }
+
+    const pushSection = $('#push-section');
+    if (pushSection) {
+      pushSection.classList.toggle('hidden', !OrbitReminders.pushConfigured());
+    }
+    const pushStatus = $('#push-status');
+    if (pushStatus) {
+      pushStatus.textContent = settings.pushEnabled ? 'Push subscribed' : 'Push off';
+    }
+    const pushBtn = $('#btn-push');
+    if (pushBtn) {
+      pushBtn.textContent = settings.pushEnabled ? 'Disable push reminders' : 'Enable push reminders';
+    }
+
+    const pinStatus = $('#pin-status');
+    if (pinStatus) {
+      pinStatus.textContent = settings.pinEnabled
+        ? 'Casual lock on (device-only)'
+        : 'Off';
+    }
+    const pinBtn = $('#btn-pin');
+    if (pinBtn) {
+      pinBtn.textContent = settings.pinEnabled ? 'Remove PIN' : 'Set PIN (4–6 digits)';
+    }
+  }
+
+  function bindSettings() {
+    $('#btn-enable-notifications') && $('#btn-enable-notifications').addEventListener('click', async () => {
+      const settings = await OrbitDB.getSettings();
+      if (settings.notificationsEnabled) {
+        await OrbitReminders.disableLocalNotifications();
+        showToast('Reminders off');
+      } else {
+        const perm = await OrbitReminders.enableLocalNotifications();
+        if (perm === 'granted') showToast('Reminders on');
+        else if (perm === 'denied') alert('Notifications are blocked. Enable them in your device settings for this site.');
+        else if (perm === 'unsupported') alert('Notifications are not supported here. Try the installed Home Screen app on a recent iOS/Safari.');
+        else showToast('Permission: ' + perm);
+      }
+      await renderSettings();
+    });
+
+    $('#btn-push') && $('#btn-push').addEventListener('click', async () => {
+      const settings = await OrbitDB.getSettings();
+      try {
+        if (settings.pushEnabled) {
+          await OrbitReminders.unsubscribePush();
+          showToast('Push off');
+        } else {
+          await OrbitReminders.subscribePush();
+          showToast('Push on');
+        }
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+      await renderSettings();
+    });
+
+    $('#btn-pin') && $('#btn-pin').addEventListener('click', async () => {
+      const settings = await OrbitDB.getSettings();
+      if (settings.pinEnabled) {
+        const pin = prompt('Enter current PIN to remove lock:');
+        if (pin == null) return;
+        if (!(await OrbitDB.verifyPin(pin))) {
+          alert('Incorrect PIN');
+          return;
+        }
+        await OrbitDB.clearPin();
+        showToast('PIN removed');
+      } else {
+        const pin = prompt('Choose a 4–6 digit PIN (casual lock — not encryption):');
+        if (pin == null) return;
+        try {
+          await OrbitDB.setPin(pin);
+          const again = prompt('Confirm PIN:');
+          if (!(await OrbitDB.verifyPin(again))) {
+            await OrbitDB.clearPin();
+            alert('PINs did not match');
+            return;
+          }
+          showToast('PIN set');
+        } catch (err) {
+          alert(err.message || String(err));
+        }
+      }
+      await renderSettings();
+    });
+
+    $('#btn-test-notif') && $('#btn-test-notif').addEventListener('click', async () => {
+      const ok = await OrbitReminders.showLocal('Orbit', 'Test notification — reminders work when permission is granted.', 'orbit-test');
+      showToast(ok ? 'Test sent' : 'Need permission first');
+    });
+  }
+
+  /* —— PIN lock screen —— */
+  function showLock() {
+    const lock = $('#lock-screen');
+    if (lock) {
+      lock.hidden = false;
+      lock.setAttribute('aria-hidden', 'false');
+      const input = $('#lock-pin');
+      if (input) { input.value = ''; setTimeout(() => input.focus(), 100); }
+    }
+  }
+
+  function hideLock() {
+    const lock = $('#lock-screen');
+    if (lock) {
+      lock.hidden = true;
+      lock.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  async function gateLock() {
+    const settings = await OrbitDB.getSettings();
+    if (!settings.pinEnabled) {
+      unlocked = true;
+      hideLock();
+      return true;
+    }
+    if (unlocked) {
+      hideLock();
+      return true;
+    }
+    showLock();
+    return false;
+  }
+
+  function bindLock() {
+    const form = $('#lock-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pin = ($('#lock-pin').value || '').trim();
+      if (await OrbitDB.verifyPin(pin)) {
+        unlocked = true;
+        hideLock();
+        haptic(10);
+      } else {
+        haptic([30, 40, 30]);
+        $('#lock-error').textContent = 'Incorrect PIN';
+        $('#lock-pin').value = '';
+      }
     });
   }
 
@@ -298,14 +721,43 @@
     bindCaptureType();
     bindNav();
     bindBackup();
+    bindShare();
+    bindPresets();
+    bindHabitEditor();
+    bindSettings();
+    bindLock();
     $('#capture-form').addEventListener('submit', onCapture);
-    await renderToday();
+
+    const ok = await gateLock();
+    if (ok) {
+      await renderToday();
+      await OrbitReminders.bootReminders();
+    } else {
+      // Still prepare UI behind lock
+      await renderToday();
+      const unlockWatcher = setInterval(async () => {
+        if (unlocked) {
+          clearInterval(unlockWatcher);
+          await OrbitReminders.bootReminders();
+        }
+      }, 400);
+    }
+
     let lastDay = OrbitDB.today();
     const checkDay = () => {
       const d = OrbitDB.today();
-      if (d !== lastDay) { lastDay = d; renderToday(); }
+      if (d !== lastDay) {
+        lastDay = d;
+        renderToday();
+        OrbitReminders.syncRemindersToSW();
+      }
     };
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDay(); });
+    document.addEventListener('visibilitychange', async () => {
+      if (!document.hidden) {
+        checkDay();
+        // Re-lock on return if PIN enabled? Keep session unlocked for usability.
+      }
+    });
     setInterval(checkDay, 60000);
   }
 

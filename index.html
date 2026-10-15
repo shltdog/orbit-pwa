@@ -22,10 +22,24 @@
         <span class="brand-mark" aria-hidden="true"></span>
         <h1>Orbit</h1>
       </div>
-      <p id="today-date" class="today-date"></p>
+      <div class="header-actions">
+        <button type="button" id="btn-share" class="icon-btn" aria-label="Share Orbit" title="Share">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>
+        </button>
+        <p id="today-date" class="today-date"></p>
+      </div>
     </header>
 
     <main id="view-today" class="view view-active" role="tabpanel">
+      <section id="onboarding-card" class="onboarding-card hidden">
+        <p class="onboarding-title">This is your private Orbit</p>
+        <p class="onboarding-text">Data stays on this device. Share the link — friends get their own blank app, not your habits.</p>
+        <div class="onboarding-actions">
+          <button type="button" id="btn-share-onboarding" class="btn btn-secondary">Share link</button>
+          <button type="button" class="btn btn-secondary" data-preset="morning">Morning pack</button>
+        </div>
+      </section>
+
       <section class="capture-bar" aria-label="Quick add">
         <div class="type-toggle" role="group" aria-label="Item type">
           <button type="button" id="type-task" class="type-btn active" data-type="task">Task</button>
@@ -44,12 +58,45 @@
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           </button>
         </form>
+        <div id="habit-options" class="habit-options hidden">
+          <label class="field-label">
+            Schedule
+            <select id="habit-schedule" class="field-select">
+              <option value="daily">Daily</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="custom">Custom days</option>
+            </select>
+          </label>
+          <div id="custom-days" class="day-chips hidden" role="group" aria-label="Days of week">
+            <button type="button" class="day-chip" data-day="0">S</button>
+            <button type="button" class="day-chip" data-day="1">M</button>
+            <button type="button" class="day-chip" data-day="2">T</button>
+            <button type="button" class="day-chip" data-day="3">W</button>
+            <button type="button" class="day-chip" data-day="4">T</button>
+            <button type="button" class="day-chip" data-day="5">F</button>
+            <button type="button" class="day-chip" data-day="6">S</button>
+          </div>
+          <label class="field-label">
+            Reminder (optional)
+            <input id="habit-reminder" type="time" class="field-input" />
+          </label>
+        </div>
       </section>
 
+      <div id="presets-row" class="presets-row hidden">
+        <button type="button" class="btn btn-secondary btn-sm" data-preset="morning">☀ Morning</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-preset="evening">☾ Evening</button>
+        <button type="button" id="btn-presets" class="btn btn-ghost btn-sm">Presets</button>
+      </div>
+
       <section class="list-section" aria-labelledby="habits-heading">
-        <h2 id="habits-heading" class="section-title">Habits</h2>
+        <div class="section-head">
+          <h2 id="habits-heading" class="section-title">Habits</h2>
+          <button type="button" id="btn-presets-toggle" class="btn btn-ghost btn-sm section-action">Presets</button>
+        </div>
         <ul id="habits-list" class="item-list"></ul>
         <p id="habits-empty" class="empty-state hidden">No habits yet. Switch to Habit and add your first ritual.</p>
+        <p id="habits-skipped" class="skipped-note hidden"></p>
       </section>
 
       <section class="list-section" aria-labelledby="tasks-heading">
@@ -105,9 +152,11 @@
         <div id="week-dots" class="week-dots" aria-label="Activity last 7 days"></div>
       </section>
 
+      <section id="weekly-review" class="stat-card review-card"></section>
+
       <section class="stat-card backup-card">
         <p class="stat-label">Backup</p>
-        <p class="stat-hint backup-hint">Export or import JSON. All data stays on this device.</p>
+        <p class="stat-hint backup-hint">Export or import JSON. All data stays on this device. Friends who open your link get a blank Orbit — not your data.</p>
         <div class="backup-actions">
           <button type="button" id="btn-export" class="btn btn-secondary">Export JSON</button>
           <button type="button" id="btn-import" class="btn btn-secondary">Import JSON</button>
@@ -119,13 +168,45 @@
     <main id="view-settings" class="view" role="tabpanel" hidden>
       <section class="stat-card">
         <p class="stat-label">About</p>
-        <p class="about-text">Orbit is an offline-first personal progression tracker. No accounts. No cloud. Your data lives in this browser.</p>
+        <p class="about-text">Orbit is an offline-first personal progression tracker. No accounts. No cloud for core data. Everything lives in this browser.</p>
         <ul class="about-list">
-          <li>Habits &amp; tasks on Today</li>
+          <li>Habits with daily / weekday / custom schedules</li>
+          <li>Local reminders + optional free Web Push</li>
           <li>XP, levels, streak with freeze recovery</li>
           <li>JSON export / import for backups</li>
         </ul>
       </section>
+
+      <section class="stat-card">
+        <p class="stat-label">Local reminders</p>
+        <p id="notif-status" class="stat-hint">Off</p>
+        <p class="stat-hint backup-hint">Best-effort while the app or service worker can wake. On iPhone: install to Home Screen; iOS 16.4+ for Web Push. Permission is only requested when you tap Enable.</p>
+        <div class="backup-actions">
+          <button type="button" id="btn-enable-notifications" class="btn btn-secondary">Enable local reminders</button>
+          <button type="button" id="btn-test-notif" class="btn btn-secondary">Test notification</button>
+        </div>
+      </section>
+
+      <section id="push-section" class="stat-card hidden">
+        <p class="stat-label">Web Push (optional)</p>
+        <p id="push-status" class="stat-hint">Push off</p>
+        <p class="stat-hint backup-hint">Uses a free Cloudflare Worker you deploy. Needs VAPID keys in <code>js/config.js</code>.</p>
+        <button type="button" id="btn-push" class="btn btn-secondary">Enable push reminders</button>
+      </section>
+
+      <section class="stat-card">
+        <p class="stat-label">Casual lock</p>
+        <p id="pin-status" class="stat-hint">Off</p>
+        <p class="stat-hint backup-hint">4–6 digit PIN stored hashed on this device only. Stops casual peeking — not strong security.</p>
+        <button type="button" id="btn-pin" class="btn btn-secondary">Set PIN (4–6 digits)</button>
+      </section>
+
+      <section class="stat-card">
+        <p class="stat-label">Share</p>
+        <p class="stat-hint backup-hint">Send the app link. Recipients install their own Orbit with empty local data.</p>
+        <button type="button" class="btn btn-secondary" id="btn-share-settings">Share Orbit link</button>
+      </section>
+
       <section class="stat-card">
         <p class="stat-label">Danger zone</p>
         <p class="stat-hint">Clears all local Orbit data on this device.</p>
@@ -151,8 +232,58 @@
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </div>
 
+  <!-- Habit edit modal -->
+  <div id="habit-modal" class="modal" hidden aria-hidden="true">
+    <div id="habit-modal-backdrop" class="modal-backdrop"></div>
+    <div class="modal-sheet" role="dialog" aria-labelledby="habit-modal-title">
+      <h2 id="habit-modal-title" class="modal-title">Edit habit</h2>
+      <label class="field-label">Name
+        <input id="edit-habit-name" type="text" maxlength="120" class="field-input" />
+      </label>
+      <label class="field-label">Schedule
+        <select id="edit-habit-schedule" class="field-select">
+          <option value="daily">Daily</option>
+          <option value="weekdays">Weekdays</option>
+          <option value="custom">Custom days</option>
+        </select>
+      </label>
+      <div id="edit-custom-days" class="day-chips hidden" role="group" aria-label="Days of week">
+        <button type="button" class="day-chip" data-day="0">S</button>
+        <button type="button" class="day-chip" data-day="1">M</button>
+        <button type="button" class="day-chip" data-day="2">T</button>
+        <button type="button" class="day-chip" data-day="3">W</button>
+        <button type="button" class="day-chip" data-day="4">T</button>
+        <button type="button" class="day-chip" data-day="5">F</button>
+        <button type="button" class="day-chip" data-day="6">S</button>
+      </div>
+      <label class="field-label">Reminder
+        <input id="edit-habit-reminder" type="time" class="field-input" />
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="habit-modal-cancel" class="btn btn-secondary">Cancel</button>
+        <button type="button" id="habit-modal-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PIN lock -->
+  <div id="lock-screen" class="lock-screen" hidden aria-hidden="true">
+    <div class="lock-card">
+      <span class="brand-mark lock-mark" aria-hidden="true"></span>
+      <h2>Orbit</h2>
+      <p class="stat-hint">Enter PIN</p>
+      <form id="lock-form">
+        <input id="lock-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" class="field-input lock-input" aria-label="PIN" />
+        <p id="lock-error" class="lock-error"></p>
+        <button type="submit" class="btn btn-primary">Unlock</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
   <script src="js/db.js"></script>
   <script src="js/gamification.js"></script>
+  <script src="js/reminders.js"></script>
   <script src="js/app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
