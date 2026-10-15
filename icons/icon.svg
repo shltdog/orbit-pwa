@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Orbit">
+  <rect width="512" height="512" fill="#0D0D0F"/>
+  <circle cx="256" cy="256" r="170" fill="none" stroke="#E63946" stroke-width="18"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#E63946" stroke-opacity="0.35" stroke-width="6"/>
+  <circle cx="256" cy="256" r="28" fill="#E63946"/>
+  <circle cx="376" cy="136" r="22" fill="#F2F2F5"/>
+  <circle cx="376" cy="136" r="34" fill="none" stroke="#E63946" stroke-width="4" stroke-opacity="0.7"/>
+</svg>
