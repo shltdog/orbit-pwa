@@ -177,19 +177,72 @@
     };
   }
 
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  /** Sunday of the calendar week containing dateStr */
+  function weekStart(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return OrbitDB.addDays(dateStr, -new Date(y, m - 1, d).getDay());
+  }
+
+  const RANKS = [
+    { min: 1, name: 'Spark', tier: 'I' },
+    { min: 3, name: 'Orbit Cadet', tier: 'II' },
+    { min: 5, name: 'Pathfinder', tier: 'III' },
+    { min: 8, name: 'Navigator', tier: 'IV' },
+    { min: 12, name: 'Vanguard', tier: 'V' },
+    { min: 16, name: 'Luminary', tier: 'VI' },
+    { min: 21, name: 'Starforged', tier: 'VII' },
+    { min: 27, name: 'Zenith', tier: 'VIII' },
+    { min: 35, name: 'Apex', tier: 'IX' }
+  ];
+  function rankFor(level) {
+    let idx = 0;
+    RANKS.forEach((r, i) => { if (level >= r.min) idx = i; });
+    const next = RANKS[idx + 1] || null;
+    return { ...RANKS[idx], index: idx, total: RANKS.length, next };
+  }
+
+  /** Lifetime stats from full history */
+  async function lifetimeStats() {
+    const [comps, tasks, active] = await Promise.all([
+      OrbitDB.getAllCompletions(), OrbitDB.getTasks(), OrbitDB.getActiveDates()
+    ]);
+    const doneTasks = tasks.filter((t) => t.completed);
+    const perDay = new Map();
+    comps.forEach((c) => perDay.set(c.date, (perDay.get(c.date) || 0) + 1));
+    doneTasks.forEach((t) => {
+      if (!t.completedAt) return;
+      const d = OrbitDB.formatDate(new Date(t.completedAt));
+      perDay.set(d, (perDay.get(d) || 0) + 1);
+    });
+    let bestDay = null;
+    perDay.forEach((n, d) => { if (!bestDay || n > bestDay.count) bestDay = { date: d, count: n }; });
+    let first = null;
+    active.forEach((d) => { if (!first || d < first) first = d; });
+    let consistency = null;
+    if (first) {
+      const [y, m, dd] = first.split('-').map(Number);
+      const span = Math.round((new Date() - new Date(y, m - 1, dd)) / 86400000) + 1;
+      consistency = Math.min(100, Math.round((active.size / Math.max(1, span)) * 100));
+    }
+    return { habitsDone: comps.length, tasksDone: doneTasks.length, bestDay, consistency, activeDays: active.size };
+  }
+
   async function last7DayActivity() {
     const active = await OrbitDB.getActiveDates();
     const today = OrbitDB.today();
     const days = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = OrbitDB.addDays(today, -i);
+    const start = weekStart(today);
+    for (let i = 0; i < 7; i++) {
+      const d = OrbitDB.addDays(start, i);
       const [y, m, day] = d.split('-').map(Number);
       const dt = new Date(y, m - 1, day);
       days.push({
         date: d,
         active: active.has(d),
         isToday: d === today,
-        label: dt.toLocaleDateString(undefined, { weekday: 'narrow' })
+        isFuture: d > today,
+        label: DOW[i]
       });
     }
     return days;
@@ -209,8 +262,13 @@
     let xpWeek = 0;
     const missCount = new Map(); // habitId -> misses when due
 
-    for (let i = 6; i >= 0; i--) {
-      const d = OrbitDB.addDays(today, -i);
+    const start = weekStart(today);
+    for (let i = 0; i < 7; i++) {
+      const d = OrbitDB.addDays(start, i);
+      if (d > today) {
+        dayStats.push({ date: d, label: DOW[i], pct: null, done: 0, total: 0, habitDone: 0, habitTotal: 0, isFuture: true });
+        continue;
+      }
       const due = await OrbitDB.getHabitsDueOn(d);
       // getHabitsDueOn only returns non-archived; for past days also check archived that existed
       const completions = await OrbitDB.getCompletionsForDate(d);
@@ -248,7 +306,8 @@
       const dt = new Date(y, m - 1, day);
       dayStats.push({
         date: d,
-        label: dt.toLocaleDateString(undefined, { weekday: 'short' }),
+        label: DOW[i],
+        isToday: d === today,
         pct,
         done,
         total,
@@ -299,6 +358,10 @@
     dailyCompletionPct,
     last7DayActivity,
     recomputeStreakFromHistory,
-    weeklyReview
+    weeklyReview,
+    weekStart,
+    RANKS,
+    rankFor,
+    lifetimeStats
   };
 })(typeof window !== 'undefined' ? window : globalThis);

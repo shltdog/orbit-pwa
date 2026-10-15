@@ -4,9 +4,13 @@
 (function () {
   'use strict';
 
-  const CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-  const TRASH_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>';
-  const EDIT_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+  const use = (n, sz) => '<svg class="ic" width="' + sz + '" height="' + sz + '" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
+  const CHECK_SVG = '<svg class="ic check-ic" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path class="check-path" d="M5 12.5l4.5 4.5L19 7.5" pathLength="1"/></svg>';
+  const TRASH_SVG = use('trash', 18);
+  const EDIT_SVG = use('edit', 16);
+  const VIEWS = ['today', 'progress', 'profile', 'settings'];
+  let currentView = 'today';
+  const reducedMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const PRESETS = {
     morning: {
@@ -62,22 +66,66 @@
     });
   }
 
+  function moveIndicator(name) {
+    const ind = document.querySelector('.nav-indicator');
+    const idx = VIEWS.indexOf(name);
+    if (ind && idx >= 0) ind.style.transform = 'translateX(' + (idx * 100) + '%)';
+  }
+
   function switchView(name) {
-    $$('.view').forEach((v) => {
-      const active = v.id === 'view-' + name;
-      v.classList.toggle('view-active', active);
-      v.hidden = !active;
-    });
+    if (name === currentView) return;
+    const fromIdx = VIEWS.indexOf(currentView);
+    const toIdx = VIEWS.indexOf(name);
+    const dir = toIdx > fromIdx ? 1 : -1;
+    const prev = $('#view-' + currentView);
+    const next = $('#view-' + name);
+    currentView = name;
     $$('.nav-btn').forEach((btn) => {
       const on = btn.dataset.view === name;
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
     });
-    if (name === 'progress') {
-      renderProgress();
-      renderWeeklyReview();
-    }
+    moveIndicator(name);
+    if (name === 'progress') { renderProgress(); renderWeeklyReview(); }
+    if (name === 'profile') renderProfile();
     if (name === 'settings') renderSettings();
+
+    $$('.view').forEach((v) => { if (v !== prev && v !== next) { v.hidden = true; v.classList.remove('view-active', 'view-leave'); } });
+    if (prev) { prev.classList.remove('view-active'); prev.hidden = true; }
+    if (next) {
+      next.style.setProperty('--dir', String(dir));
+      next.hidden = false;
+      next.classList.remove('view-active');
+      void next.offsetWidth; // restart animation
+      next.classList.add('view-active');
+      if (!reducedMotion()) staggerIn(next);
+    }
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+
+  function staggerIn(root) {
+    const items = root.querySelectorAll('.item-card, .stat-card, .profile-hero, .capture-bar');
+    items.forEach((el, i) => {
+      el.style.setProperty('--i', String(Math.min(i, 10)));
+      el.classList.remove('stagger');
+      void el.offsetWidth;
+      el.classList.add('stagger');
+    });
+  }
+
+  function flyXp(fromEl, amount) {
+    if (!fromEl || reducedMotion()) return;
+    const layer = $('#xp-fly-layer');
+    if (!layer) return;
+    const r = fromEl.getBoundingClientRect();
+    const chip = document.createElement('div');
+    chip.className = 'xp-fly';
+    chip.innerHTML = use('xp', 14) + '<span>+' + amount + ' XP</span>';
+    chip.style.left = (r.right - 90) + 'px';
+    chip.style.top = (r.top + r.height / 2 - 14) + 'px';
+    layer.appendChild(chip);
+    chip.addEventListener('animationend', () => chip.remove());
+    setTimeout(() => chip.remove(), 1200);
   }
 
   async function renderToday() {
@@ -141,7 +189,7 @@
     li.className = 'item-card' + (done ? ' completed' : '');
     li.dataset.id = habit.id;
     const metaParts = [OrbitDB.scheduleLabel(habit)];
-    if (habit.reminderTime) metaParts.push('⏰ ' + habit.reminderTime);
+    if (habit.reminderTime) metaParts.push('Reminds ' + habit.reminderTime);
     li.innerHTML =
       '<div class="check" aria-hidden="true">' + CHECK_SVG + '</div>' +
       '<div class="item-body"><p class="item-title"></p><p class="item-meta"></p></div>' +
@@ -203,6 +251,7 @@
   }
 
   const busy = new Set();
+  const wait = (ms) => new Promise((r) => setTimeout(r, reducedMotion() ? 0 : ms));
 
   async function toggleHabit(id, done, el) {
     if (busy.has(id)) return;
@@ -215,9 +264,11 @@
       } else if (done) {
         el.classList.add('completed', 'just-done');
         haptic([10, 30, 18]);
+        flyXp(el, OrbitGame.XP_HABIT);
         const result = await OrbitGame.awardXp(OrbitGame.XP_HABIT, today);
         showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
         await OrbitReminders.syncRemindersToSW();
+        await wait(380);
       } else {
         el.classList.remove('completed', 'just-done');
         haptic(8);
@@ -240,8 +291,10 @@
       } else if (done) {
         el.classList.add('completed', 'just-done');
         haptic([10, 30, 18]);
+        flyXp(el, OrbitGame.XP_TASK);
         const result = await OrbitGame.awardXp(OrbitGame.XP_TASK, today);
         showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
+        await wait(380);
       } else {
         el.classList.remove('completed', 'just-done');
         haptic(8);
@@ -275,7 +328,7 @@
     weekEl.innerHTML = '';
     week.forEach((d) => {
       const cell = document.createElement('div');
-      cell.className = 'week-dot' + (d.active ? ' active' : '') + (d.isToday ? ' today' : '');
+      cell.className = 'week-dot' + (d.active ? ' active' : '') + (d.isToday ? ' today' : '') + (d.isFuture ? ' future' : '');
       cell.innerHTML = '<div class="dot"></div><span class="dow"></span>';
       cell.querySelector('.dow').textContent = d.label;
       cell.title = d.date + (d.active ? ' · active' : '');
@@ -306,11 +359,76 @@
       '<div class="week-bars" aria-label="Daily completion">' +
       w.dayStats.map((d) => {
         const h = d.pct == null ? 4 : Math.max(8, Math.round((d.pct / 100) * 48));
-        return '<div class="week-bar" title="' + d.date + ': ' + (d.pct == null ? 'n/a' : d.pct + '%') + '">' +
+        return '<div class="week-bar' + (d.isFuture ? ' future' : '') + (d.isToday ? ' today' : '') + '" title="' + d.date + ': ' + (d.pct == null ? 'n/a' : d.pct + '%') + '">' +
           '<div class="week-bar-fill" style="height:' + h + 'px"></div>' +
           '<span>' + escapeHtml(d.label) + '</span></div>';
       }).join('') +
       '</div>';
+  }
+
+  function initials(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return 'O';
+    return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+  }
+
+  async function renderProfile() {
+    const meta = (await OrbitDB.getMeta()) || { ...OrbitDB.DEFAULT_META };
+    const prog = OrbitGame.progressInLevel(meta.xp || 0);
+    const rank = OrbitGame.rankFor(prog.level);
+    const life = await OrbitGame.lifetimeStats();
+    const week = await OrbitGame.last7DayActivity();
+    const name = meta.displayName || 'Orbiter';
+
+    $('#profile-name').textContent = name;
+    $('#profile-avatar').textContent = initials(name);
+    $('#profile-level-badge').textContent = String(prog.level);
+    $('#profile-rank').textContent = rank.name;
+    $('#profile-rank-tier').textContent = 'Tier ' + rank.tier + ' of ' + rank.total;
+    document.querySelector('.profile-hero').style.setProperty('--tier', String(rank.index));
+    $('#avatar-ring-fill').style.strokeDashoffset = String(100 - prog.pct);
+    $('#profile-xp-fill').style.width = prog.pct + '%';
+    $('#profile-xp-bar').setAttribute('aria-valuenow', String(prog.pct));
+    $('#profile-xp-total').textContent = prog.xp.toLocaleString() + ' XP';
+    $('#profile-xp-next').textContent = (prog.next - prog.xp) + ' to Lv ' + (prog.level + 1);
+    $('#profile-next-rank').textContent = rank.next
+      ? 'Next rank: ' + rank.next.name + ' at Level ' + rank.next.min
+      : 'Apex reached — the summit is yours.';
+
+    $('#rank-ladder').innerHTML = OrbitGame.RANKS.map((r, i) =>
+      '<span class="rung' + (i < rank.index ? ' done' : '') + (i === rank.index ? ' current' : '') +
+      '" title="' + escapeHtml(r.name + ' · Lv ' + r.min) + '"></span>').join('');
+
+    $('#pf-streak').textContent = String(meta.streakCurrent || 0);
+    $('#pf-best').textContent = String(meta.streakBest || 0);
+    $('#pf-freeze').textContent = String(meta.streakFreezeRemaining != null ? meta.streakFreezeRemaining : OrbitGame.MAX_FREEZES);
+    $('#pf-habits').textContent = String(life.habitsDone);
+    $('#pf-tasks').textContent = String(life.tasksDone);
+    $('#pf-bestday').textContent = life.bestDay ? life.bestDay.count + ' done' : '—';
+    $('#pf-consistency').textContent = life.consistency == null ? '—' : life.consistency + '%';
+
+    $('#pf-week').innerHTML = week.map((d) =>
+      '<div class="ws' + (d.active ? ' active' : '') + (d.isToday ? ' today' : '') + (d.isFuture ? ' future' : '') + '">' +
+      '<span class="ws-cell">' + (d.active ? use('check', 12) : '') + '</span><span class="ws-dow">' + d.label + '</span></div>').join('');
+  }
+
+  function bindProfile() {
+    const nameBtn = $('#profile-name');
+    nameBtn && nameBtn.addEventListener('click', async () => {
+      const meta = (await OrbitDB.getMeta()) || {};
+      const v = prompt('Display name (stays on this device):', meta.displayName || '');
+      if (v == null) return;
+      await OrbitDB.updateMeta({ displayName: v.trim().slice(0, 40) });
+      haptic(8);
+      await renderProfile();
+    });
+    const shareBtn = $('#btn-share-profile');
+    shareBtn && shareBtn.addEventListener('click', async () => {
+      const meta = (await OrbitDB.getMeta()) || {};
+      const lvl = OrbitGame.levelFromXp(meta.xp || 0);
+      const rank = OrbitGame.rankFor(lvl);
+      await doShare("I'm Level " + lvl + ' — ' + rank.name + ' on Orbit. Build your own private streak:');
+    });
   }
 
   function escapeHtml(s) {
@@ -410,6 +528,7 @@
         await renderToday();
         await renderProgress();
         await renderWeeklyReview();
+        if (currentView === 'profile') await renderProfile();
         await OrbitReminders.syncRemindersToSW();
         showToast('Imported');
       } catch (err) {
@@ -430,11 +549,11 @@
     });
   }
 
-  async function doShare() {
+  async function doShare(customText) {
     const url = OrbitReminders.appUrl();
     const payload = {
       title: 'Orbit',
-      text: 'Try Orbit — private offline habit tracker. Your data stays on your device.',
+      text: typeof customText === 'string' ? customText : 'Try Orbit — private offline habit tracker. Your data stays on your device.',
       url
     };
     try {
@@ -458,7 +577,7 @@
   function bindShare() {
     ['#btn-share', '#btn-share-onboarding', '#btn-share-settings'].forEach((sel) => {
       const btn = $(sel);
-      if (btn) btn.addEventListener('click', doShare);
+      if (btn) btn.addEventListener('click', () => doShare());
     });
   }
 
@@ -726,11 +845,13 @@
     bindHabitEditor();
     bindSettings();
     bindLock();
+    bindProfile();
     $('#capture-form').addEventListener('submit', onCapture);
 
     const ok = await gateLock();
     if (ok) {
       await renderToday();
+      if (!reducedMotion()) staggerIn($('#view-today'));
       await OrbitReminders.bootReminders();
     } else {
       // Still prepare UI behind lock
@@ -742,6 +863,9 @@
         }
       }, 400);
     }
+
+    const startView = (location.hash || '').replace('#', '');
+    if (VIEWS.includes(startView)) switchView(startView);
 
     let lastDay = OrbitDB.today();
     const checkDay = () => {
