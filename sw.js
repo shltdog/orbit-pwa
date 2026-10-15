@@ -1,5 +1,5 @@
 /* Orbit service worker — cache-first static shell */
-const CACHE = 'orbit-v1';
+const CACHE = 'orbit-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -26,26 +26,22 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Network-first for same-origin so updates land; cache fallback when offline.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.method !== 'GET') return;
+  if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
+    fetch(req).then((res) => {
+      if (res.ok) {
         const copy = res.clone();
-        // Cache same-origin successful responses for navigations / assets
-        if (res.ok && (req.url.startsWith(self.location.origin))) {
-          caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
-        }
-        return res;
-      }).catch(() => {
-        if (req.mode === 'navigate') {
-          return caches.match('./index.html');
-        }
-        return caches.match(req);
-      });
-    })
+        caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+      }
+      return res;
+    }).catch(() =>
+      caches.match(req, { ignoreSearch: true }).then((cached) =>
+        cached || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error())
+      )
+    )
   );
 });

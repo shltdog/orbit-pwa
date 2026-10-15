@@ -48,6 +48,7 @@
       try {
         result = fn(stores, transaction);
       } catch (err) {
+        try { transaction.abort(); } catch (_) {}
         reject(err);
         return;
       }
@@ -107,7 +108,7 @@
       const habits = await this.getHabits({ includeArchived: true });
       const habit = {
         id: uid(),
-        name: String(name).trim(),
+        name: String(name).trim().slice(0, 200),
         createdAt: Date.now(),
         archived: false,
         sortOrder: habits.length
@@ -142,13 +143,19 @@
 
     async setHabitDone(habitId, date, done) {
       const id = this.completionKey(habitId, date);
-      if (done) {
-        const row = { id, habitId, date, completedAt: Date.now() };
-        await tx('completions', 'readwrite', (stores) => { stores.completions.put(row); });
-        return row;
-      }
-      await tx('completions', 'readwrite', (stores) => { stores.completions.delete(id); });
-      return null;
+      // Returns true only if state actually changed (prevents double XP on rapid taps)
+      return tx('completions', 'readwrite', (stores) =>
+        reqToPromise(stores.completions.get(id)).then((existing) => {
+          if (done) {
+            if (existing) return false;
+            stores.completions.put({ id, habitId, date, completedAt: Date.now() });
+            return true;
+          }
+          if (!existing) return false;
+          stores.completions.delete(id);
+          return true;
+        })
+      );
     },
 
     async getCompletionsForDate(date) {
@@ -191,7 +198,7 @@
     async addTask(title, dueDate) {
       const task = {
         id: uid(),
-        title: String(title).trim(),
+        title: String(title).trim().slice(0, 500),
         dueDate: dueDate || null,
         completed: false,
         completedAt: null,
@@ -204,7 +211,7 @@
     async setTaskCompleted(id, completed) {
       return tx('tasks', 'readwrite', (stores) =>
         reqToPromise(stores.tasks.get(id)).then((task) => {
-          if (!task) return null;
+          if (!task || !!task.completed === !!completed) return null;
           task.completed = !!completed;
           task.completedAt = completed ? Date.now() : null;
           stores.tasks.put(task);
@@ -288,10 +295,15 @@
     },
 
     async importAll(data) {
-      if (!data || typeof data !== 'object') throw new Error('Invalid backup');
-      const habits = Array.isArray(data.habits) ? data.habits : [];
-      const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-      const completions = Array.isArray(data.completions) ? data.completions : [];
+      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid backup');
+      if (data.app !== 'Orbit' || !Array.isArray(data.habits) || !Array.isArray(data.tasks) || !Array.isArray(data.completions)) {
+        throw new Error('Not an Orbit backup');
+      }
+      const okId = (x) => x && typeof x === 'object' && (typeof x.id === 'string' || typeof x.id === 'number');
+      const habits = data.habits, tasks = data.tasks, completions = data.completions;
+      if (!habits.every(okId) || !tasks.every(okId) || !completions.every(okId)) {
+        throw new Error('Backup has malformed records');
+      }
       const meta = data.meta && typeof data.meta === 'object' ? data.meta : { ...DEFAULT_META };
 
       await tx(['habits', 'tasks', 'completions', 'meta'], 'readwrite', (stores) => {

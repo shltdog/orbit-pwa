@@ -141,10 +141,17 @@
     return li;
   }
 
+  const busy = new Set();
+
   async function toggleHabit(id, done, el) {
+    if (busy.has(id)) return;
+    busy.add(id);
+    try {
     const today = OrbitDB.today();
-    await OrbitDB.setHabitDone(id, today, done);
-    if (done) {
+    const changed = await OrbitDB.setHabitDone(id, today, done);
+    if (!changed) {
+      // no-op
+    } else if (done) {
       el.classList.add('completed', 'just-done');
       const result = await OrbitGame.awardXp(OrbitGame.XP_HABIT, today);
       showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
@@ -154,12 +161,18 @@
       showToast('Undone');
     }
     await renderToday();
+    } finally { busy.delete(id); }
   }
 
   async function toggleTask(id, done, el) {
+    if (busy.has(id)) return;
+    busy.add(id);
+    try {
     const today = OrbitDB.today();
-    await OrbitDB.setTaskCompleted(id, done);
-    if (done) {
+    const changed = await OrbitDB.setTaskCompleted(id, done);
+    if (!changed) {
+      // no-op
+    } else if (done) {
       el.classList.add('completed', 'just-done');
       const result = await OrbitGame.awardXp(OrbitGame.XP_TASK, today);
       showToast('+' + result.gained + ' XP' + (result.leveledUp ? ' · Level up!' : ''));
@@ -169,6 +182,7 @@
       showToast('Undone');
     }
     await renderToday();
+    } finally { busy.delete(id); }
   }
 
   async function renderProgress() {
@@ -286,6 +300,13 @@
     bindBackup();
     $('#capture-form').addEventListener('submit', onCapture);
     await renderToday();
+    let lastDay = OrbitDB.today();
+    const checkDay = () => {
+      const d = OrbitDB.today();
+      if (d !== lastDay) { lastDay = d; renderToday(); }
+    };
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDay(); });
+    setInterval(checkDay, 60000);
   }
 
   if (document.readyState === 'loading') {
